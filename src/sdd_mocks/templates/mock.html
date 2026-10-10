@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Мок Bitbucket + Jira</title>
+  <style>
+    :root { --bg:#f4f5f7; --surface:#fff; --border:#dfe1e6; --text:#172b4d; --muted:#6b778c; --blue:#0052cc;
+      --green:#00875a; --green-soft:#e3fcef; --red:#de350b; --red-soft:#ffebe6; --yellow:#ff991f; --yellow-soft:#fffae6;
+      font-family: Inter, "Segoe UI", system-ui, sans-serif; color: var(--text); background: var(--bg); }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-size: 14px; line-height: 1.45; }
+    a { color: var(--blue); text-decoration: none; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    code { background: #f0f1f4; padding: 1px 5px; border-radius: 4px; }
+    header { background: #0747a6; color: #fff; padding: 14px 24px; display: flex; justify-content: space-between;
+      align-items: center; gap: 12px; flex-wrap: wrap; }
+    header h1 { font-size: 16px; margin: 0; }
+    header p { margin: 2px 0 0; opacity: .8; font-size: 12.5px; }
+    header form button { background: rgba(255,255,255,.15); color: #fff; border-color: rgba(255,255,255,.3); }
+    main { padding: 20px 24px; display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 20px; }
+    section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    section + section { margin-top: 20px; }
+    h2 { font-size: 15px; margin: 0 0 12px; }
+    h3 { font-size: 13px; margin: 16px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+    .flash { margin: 16px 24px 0; padding: 10px 14px; border-radius: 6px; }
+    .flash-ok { background: var(--green-soft); color: var(--green); }
+    .flash-error { background: var(--red-soft); color: var(--red); }
+    .pr { border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px; scroll-margin-top: 16px; }
+    .pr:target, .issue:target { outline: 2px solid var(--blue); }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .muted { color: var(--muted); }
+    .lozenge { font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 1px 6px; border-radius: 3px;
+      background: #dfe1e6; color: #42526e; }
+    .l-open { background: #deebff; color: var(--blue); }
+    .l-merged, .l-successful, .l-approved, .l-done { background: var(--green-soft); color: var(--green); }
+    .l-declined, .l-failed { background: var(--red-soft); color: var(--red); }
+    .l-needs_work, .l-inprogress { background: var(--yellow-soft); color: #974f0c; }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+    .actions form { margin: 0; }
+    button { font: inherit; font-size: 12.5px; font-weight: 600; padding: 5px 10px; border-radius: 4px;
+      border: 1px solid var(--border); background: #f4f5f7; color: var(--text); cursor: pointer; }
+    button:hover { background: #ebecf0; }
+    .primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+    .primary:hover { background: #0747a6; }
+    .danger { color: var(--red); }
+    details { margin-top: 8px; }
+    summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #f7f8f9; padding: 8px; border-radius: 4px; margin: 6px 0 0; }
+    .issue { border-top: 1px solid var(--border); padding: 8px 0; scroll-margin-top: 16px; }
+    .issue:first-of-type { border-top: none; }
+    .labels { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+    .label { font-size: 11px; background: #f0f1f4; padding: 0 6px; border-radius: 3px; color: var(--muted); }
+    .empty { color: var(--muted); padding: 12px; border: 1px dashed var(--border); border-radius: 6px; }
+    .grid-form { display: grid; gap: 6px; }
+    input, textarea, select { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; width: 100%; }
+    table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    td, th { text-align: left; padding: 4px 6px; border-top: 1px solid var(--border); vertical-align: top; }
+    .fault-on { background: var(--red-soft); color: var(--red); padding: 8px; border-radius: 6px; margin-bottom: 8px; font-weight: 600; }
+    @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Мок Bitbucket Data Center + Jira Data Center</h1>
+    <p>Локальная замена внешних систем для SDD Orchestrator. Webhook отправляются на <code style="color:#fff;background:rgba(255,255,255,.15)">{{ webhook_url }}</code></p>
+  </div>
+  <form method="post" action="/ui/reset" onsubmit="return confirm('Сбросить все PR и задачи моков?')"><button>Сбросить состояние</button></form>
+</header>
+{% if msg %}<div class="flash flash-{{ kind }}">{{ msg }}</div>{% endif %}
+<main>
+  <div>
+    {% for repo in repos %}
+    <section>
+      <h2>Bitbucket · {{ repo.project }}/{{ repo.slug }}</h2>
+      {% if not repo.prs %}
+      <div class="empty">Pull request ещё нет. Их создаёт CLI <code>sdd open-pr</code> или демо-скрипт <code>scripts/demo.py</code>.</div>
+      {% endif %}
+      {% for item in repo.prs %}{% set pr = item.pr %}
+      <div class="pr" id="pr-{{ repo.project }}-{{ repo.slug }}-{{ pr.id }}">
+        <div class="row">
+          <strong>#{{ pr.id }} {{ pr.title }}</strong>
+          <span class="lozenge l-{{ pr.state | lower }}">{{ pr.state }}</span>
+          {% if item.build %}<span class="lozenge l-{{ item.build | lower }}">CI {{ item.build }}</span>{% endif %}
+        </div>
+        <div class="muted"><code>{{ pr.fromRef.displayId }}</code> → <code>{{ pr.toRef.displayId }}</code> · commit <code>{{ pr.fromRef.latestCommit[:10] }}</code>
+          {% if pr.properties.mergeCommit %} · merge <code>{{ pr.properties.mergeCommit.id[:10] }}</code>{% endif %}</div>
+        <div class="row" style="margin-top:6px">
+          {% for r in pr.reviewers %}<span class="lozenge l-{{ r.status | lower }}">{{ r.user.name }}: {{ r.status }}</span>{% endfor %}
+        </div>
+        {% if pr.state == 'OPEN' %}
+        <div class="actions">
+          {% set base = '/ui/pr/' ~ repo.project ~ '/' ~ repo.slug ~ '/' ~ pr.id %}
+          <form method="post" action="{{ base }}/approve"><button>Одобрить</button></form>
+          <form method="post" action="{{ base }}/needs-work"><button>На доработку</button></form>
+          <form method="post" action="{{ base }}/build"><input type="hidden" name="build_state" value="SUCCESSFUL"><button>CI: успешно</button></form>
+          <form method="post" action="{{ base }}/build"><input type="hidden" name="build_state" value="FAILED"><button>CI: упал</button></form>
+          <form method="post" action="{{ base }}/merge"><button class="primary">Merge</button></form>
+          <form method="post" action="{{ base }}/decline"><button class="danger">Decline</button></form>
+        </div>
+        {% else %}
+        <div class="actions">
+          <form method="post" action="/ui/pr/{{ repo.project }}/{{ repo.slug }}/{{ pr.id }}/redeliver"><button>Повторить последний webhook</button></form>
+        </div>
+        {% endif %}
+        <details>
+          <summary>Описание и комментарии ({{ item.comments | length }})</summary>
+          <pre>{{ pr.description }}</pre>
+          {% for c in item.comments %}<pre><strong>{{ c.author.name }}:</strong> {{ c.text }}</pre>{% endfor %}
+        </details>
+      </div>
+      {% endfor %}
+      <details><summary>Ветки ({{ repo.branches | length }})</summary>
+        <table>{% for name, sha in repo.branches %}<tr><td><code>{{ name }}</code></td><td><code>{{ sha[:10] }}</code></td></tr>{% endfor %}</table>
+      </details>
+    </section>
+    {% endfor %}
+  </div>
+
+  <div>
+    <section>
+      <h2>Сбои Jira</h2>
+      {% if faults.mode != 'off' %}<div class="fault-on">Активен режим «{{ faults.mode }}», осталось срабатываний: {{ faults.remaining }}</div>{% endif %}
+      <div class="actions">
+        <form method="post" action="/ui/faults"><input type="hidden" name="mode" value="down"><input type="hidden" name="count" value="3"><button>Jira недоступна (3 запроса)</button></form>
+        <form method="post" action="/ui/faults"><input type="hidden" name="mode" value="fail_after_create"><input type="hidden" name="count" value="1"><button>Обрыв после создания задачи</button></form>
+        <form method="post" action="/ui/faults"><input type="hidden" name="mode" value="off"><button>Выключить</button></form>
+      </div>
+      {% if fault_log %}<table style="margin-top:8px">{% for line in fault_log %}<tr><td>{{ line }}</td></tr>{% endfor %}</table>{% endif %}
+    </section>
+
+    <section>
+      <h2>Jira · задачи</h2>
+      <form class="grid-form" method="post" action="/ui/ideas">
+        <input name="summary" placeholder="Название новой Business Idea" required>
+        <textarea name="description" rows="2" placeholder="Описание (обязательное поле для передачи аналитику)"></textarea>
+        <button>Создать Business Idea</button>
+      </form>
+      <div style="margin-top:12px">
+        {% for issue in issues %}{% set f = issue.fields %}
+        <div class="issue" id="issue-{{ issue.key }}">
+          <div class="row">
+            <strong>{{ issue.key }}</strong>
+            <span class="lozenge">{{ f.issuetype.name }}</span>
+            <span class="lozenge l-{{ f.status.name | lower | replace(' ', '') }}">{{ f.status.name }}</span>
+          </div>
+          <div>{{ f.summary }}</div>
+          {% if f.issuelinks %}<div class="muted" style="font-size:12.5px">
+            {% for l in f.issuelinks %}{% if l.outwardIssue %}{{ l.type.outward }} <a href="#issue-{{ l.outwardIssue.key }}">{{ l.outwardIssue.key }}</a>{% else %}{{ l.type.inward }} <a href="#issue-{{ l.inwardIssue.key }}">{{ l.inwardIssue.key }}</a>{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}
+          </div>{% endif %}
+          {% if f.labels %}<div class="labels">{% for label in f.labels %}<span class="label">{{ label }}</span>{% endfor %}</div>{% endif %}
+          <details><summary>Описание, комментарии ({{ f.comment.total }}), ссылки ({{ issue.remotelinks | length }})</summary>
+            <pre>{{ f.description or '— пусто —' }}</pre>
+            {% for c in f.comment.comments %}<pre><strong>{{ c.author.name }}:</strong> {{ c.body }}</pre>{% endfor %}
+            {% for r in issue.remotelinks %}<pre><a href="{{ r.object.url }}">{{ r.object.title }}</a></pre>{% endfor %}
+          </details>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section>
+      <h2>Доставка webhook</h2>
+      {% if not deliveries %}<div class="empty">Webhook ещё не отправлялись.</div>{% else %}
+      <table>
+        <tr><th>#</th><th>Событие</th><th>PR</th><th>Ответ</th></tr>
+        {% for d in deliveries %}
+        <tr><td>{{ d.id }}</td><td><code>{{ d.event_key }}</code></td><td>{{ d.pull_request }}</td>
+          <td>{% if d.error %}<span class="lozenge l-failed">ошибка</span> {{ d.error }}{% elif d.status_code %}<span class="lozenge {{ 'l-successful' if d.status_code < 300 else 'l-failed' }}">{{ d.status_code }}</span> <span class="muted">{{ d.response[:90] }}</span>{% else %}…{% endif %}</td></tr>
+        {% endfor %}
+      </table>
+      {% endif %}
+    </section>
+  </div>
+</main>
+</body>
+</html>
