@@ -1,0 +1,30 @@
+name: sdd
+version: 1
+description: >
+  SDD MVP: бизнес-спецификация (бизнес-аналитик + AI) → функциональная спецификация
+  (системный аналитик + AI). Каждый артефакт согласуется отдельным PR в Bitbucket.
+
+artifacts:
+  - id: business-spec
+    generates: business-spec.md
+    description: Бизнес-спецификация изменения
+    template: business-spec.md
+    instruction: |
+      Сформируй бизнес-спецификацию по Business Idea из Jira.
+      Опиши ЗАЧЕМ нужно изменение и ЧТО меняется для бизнеса; не описывай техническую реализацию.
+      Все разделы шаблона обязательны; если данных нет — сформулируй открытый вопрос.
+      Перед PR запусти `sdd validate openspec/changes/<Change ID>/business-spec.md --type business`.
+    requires: []
+
+  - id: functional-spec
+    generates: functional-spec.md
+    description: Функциональная спецификация компонента
+    template: functional-spec.md
+    instruction: |
+      Сформируй функциональную спецификацию на основе СОГЛАСОВАННОЙ бизнес-спецификации
+      (commit указан в Jira-задаче системного анализа) и фактического кода приложения.
+      Для каждого технического факта укажи файл и раздел-источник.
+      Раздел «Декомпозиция» превращается в Jira-задачи разработки после merge PR.
+      Перед PR запусти `sdd validate openspec/changes/<Change ID>/functional-spec.md --type functional`.
+    requires:
+      - business-spec

@@ -1,0 +1,21 @@
+# OpenSpec config for the application repository: technical specs that live next to the code.
+schema: spec-driven
+
+context: |
+  Репозиторий приложения. Реализация ведётся по Jira-задачам разработки, созданным
+  Integration Service из раздела «Декомпозиция» функциональной спецификации.
+  Ветка реализации: feature/<Change ID>-<JIRA-KEY>-implementation.
+  Контекст задачи для агента лежит в .sdd/context.md (создаётся командой sdd start-dev).
+
+rules:
+  specs:
+    - Используй формат Given/When/Then для сценариев.
+    - Ссылайся на функциональную спецификацию и её commit.
+  tasks:
+    - Каждая задача заканчивается тестами для критериев приёмки, включая негативные сценарии.
+
+operations:
+  apply:
+    guidance:
+      - Сначала запускай тесты затронутого модуля, затем весь набор.
+      - Не меняй файлы вне области задачи.
