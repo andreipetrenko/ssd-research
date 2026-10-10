@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SDD Orchestrator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">SDD</span>
+      <div>
+        <h1>SDD Orchestrator</h1>
+        <p>Бизнес-идея → OpenSpec → Bitbucket PR → Jira → AI-разработка</p>
+      </div>
+    </div>
+    <div class="topbar-status">
+      <span class="pill {{ 'pill-ok' if health.database == 'ok' else 'pill-bad' }}">PostgreSQL: {{ 'доступна' if health.database == 'ok' else health.database }}</span>
+      <span class="pill {{ 'pill-ok' if health.retry_worker else 'pill-muted' }}">Обработчик повторов: {{ 'работает' if health.retry_worker else 'выключен' }}</span>
+      <a class="pill pill-link" href="{{ settings.jira_browse_base }}" target="_blank" rel="noopener">Jira</a>
+      <a class="pill pill-link" href="{{ settings.bitbucket_base_url }}" target="_blank" rel="noopener">Bitbucket</a>
+    </div>
+  </header>
+
+  {% if msg %}
+  <div class="flash flash-{{ kind }}" role="status">{{ msg }}</div>
+  {% endif %}
+
+  <main id="live">
+    {% include "_live.html" %}
+  </main>
+
+  <footer class="footer">
+    Webhook: <code>{{ settings.public_url }}/webhooks/bitbucket</code> ·
+    <a href="/docs">REST API</a> · <a href="/metrics">Prometheus metrics</a> · <a href="/health">health</a>
+  </footer>
+
+  <script>
+    // Refresh live data every 5 s, but never while the user is typing into a form.
+    const live = document.getElementById("live");
+    async function refresh() {
+      const active = document.activeElement;
+      if (active && ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName)) return;
+      try {
+        const response = await fetch("/?partial=1", { headers: { "Accept": "text/html" } });
+        if (response.ok) live.innerHTML = await response.text();
+      } catch (_) { /* server restarting; try again on the next tick */ }
+    }
+    setInterval(refresh, 5000);
+    if (location.search.includes("msg=")) history.replaceState(null, "", "/");
+  </script>
+</body>
+</html>

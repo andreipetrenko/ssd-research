@@ -1,0 +1,159 @@
+<section class="metrics" aria-label="Метрики">
+  <div class="metric">
+    <span class="metric-label">Webhook получено</span>
+    <span class="metric-value">{{ metrics.deliveries }}</span>
+    <span class="metric-hint">обработано {{ processed }}</span>
+  </div>
+  <div class="metric">
+    <span class="metric-label">Предотвращено дубликатов</span>
+    <span class="metric-value">{{ metrics.duplicates_prevented }}</span>
+    <span class="metric-hint">повторные доставки</span>
+  </div>
+  <div class="metric {{ 'metric-warn' if pending_retry else '' }}">
+    <span class="metric-label">Ожидают повтора</span>
+    <span class="metric-value">{{ pending_retry }}</span>
+    <span class="metric-hint">повторных попыток {{ metrics.retries }}</span>
+  </div>
+  <div class="metric {{ 'metric-bad' if problems else '' }}">
+    <span class="metric-label">Требуют внимания</span>
+    <span class="metric-value">{{ problems }}</span>
+    <span class="metric-hint">отклонено или исчерпаны попытки</span>
+  </div>
+  <div class="metric">
+    <span class="metric-label">Merge → Jira</span>
+    <span class="metric-value">{{ duration(metrics.merge_to_jira_avg_seconds) }}</span>
+    <span class="metric-hint">в среднем, макс. {{ duration(metrics.merge_to_jira_max_seconds) }}</span>
+  </div>
+  <div class="metric">
+    <span class="metric-label">С первого ревью</span>
+    <span class="metric-value">{% if metrics.merged_prs %}{{ (100 * metrics.merged_prs_first_review / metrics.merged_prs) | round | int }}%{% else %}—{% endif %}</span>
+    <span class="metric-hint">идея → PR с кодом: {{ duration(metrics.idea_to_code_pr_avg_seconds) }}</span>
+  </div>
+</section>
+
+<div class="layout">
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Изменения</h2>
+      <form class="inline-form" method="post" action="/ui/ideas">
+        <label class="sr-only" for="source_issue">Business Idea</label>
+        <input id="source_issue" name="source_issue" placeholder="IDEA-123" required pattern="[A-Za-z][A-Za-z0-9]+-\d+">
+        <button type="submit" class="btn btn-primary">Взять идею в работу</button>
+      </form>
+    </div>
+
+    {% if not changes %}
+    <div class="empty">
+      <h3>Пока нет ни одного изменения</h3>
+      <p>Укажите ключ Business Idea из Jira — сервис проверит обязательные поля, выдаст Change ID и имя ветки для бизнес-спецификации.
+        Изменение также появится автоматически, когда в Bitbucket откроют PR из ветки <code>feature/CHG-…-business-spec</code>.</p>
+    </div>
+    {% endif %}
+
+    {% for change in changes %}
+    {% set current = stage_index[change.stage] %}
+    <article class="change">
+      <div class="change-head">
+        <div>
+          <div class="change-id">{{ change.change_id }}</div>
+          <h3>{{ change.title or 'Без названия' }}</h3>
+        </div>
+        <span class="badge badge-{{ change.status }}">{{ status_titles.get(change.status, change.status) }}</span>
+      </div>
+
+      <ol class="pipeline">
+        {% for stage in pipeline %}
+        <li class="{{ 'done' if loop.index0 < current or change.stage == 'done' else ('current' if loop.index0 == current else '') }}">
+          <span class="dot"></span><span class="step">{{ stage_titles[stage] }}</span>
+        </li>
+        {% endfor %}
+      </ol>
+
+      <dl class="facts">
+        <div><dt>Business Idea</dt><dd><a href="{{ change.source_issue_url }}" target="_blank" rel="noopener">{{ change.source_issue }}</a></dd></div>
+        <div><dt>Ветка бизнес-спецификации</dt><dd><code>{{ change.business_branch }}</code></dd></div>
+        <div><dt>Обновлено</dt><dd>{{ change.updated_at.strftime('%d.%m %H:%M:%S') }}</dd></div>
+      </dl>
+
+      {% if change.artifacts %}
+      <h4>Pull requests</h4>
+      <ul class="trace">
+        {% for a in change.artifacts %}
+        <li>
+          <span class="tag">{{ a.title }}</span>
+          {% if a.pull_request_url %}<a href="{{ a.pull_request_url }}" target="_blank" rel="noopener">{{ a.repository }} #{{ a.pull_request_id }}</a>{% else %}{{ a.repository }} #{{ a.pull_request_id }}{% endif %}
+          <span class="badge badge-pr-{{ (a.pull_request_state or '') | lower }}">{{ a.pull_request_state }}</span>
+          {% if a.merge_commit_sha %}<code title="merge commit">{{ a.merge_commit_sha[:10] }}</code>{% elif a.commit_sha %}<code title="последний commit">{{ a.commit_sha[:10] }}</code>{% endif %}
+          {% if a.jira_key %}<span class="muted">→ {{ a.jira_key }}</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+
+      {% if change.issues %}
+      <h4>Jira</h4>
+      <ul class="trace">
+        {% for i in change.issues %}
+        <li>
+          <span class="tag tag-{{ i.stage }}">{{ stage_titles[i.stage] }}</span>
+          <a href="{{ i.url }}" target="_blank" rel="noopener">{{ i.issue_key }}</a>
+          <span class="summary">{{ i.summary }}</span>
+          {% if i.state == 'done' %}<span class="badge badge-done">готово</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </section>
+
+  <aside class="side">
+    <section class="panel">
+      <div class="panel-head"><h2>Журнал событий</h2></div>
+      {% if not events %}
+      <div class="empty empty-small">
+        <p>Событий ещё не было. Подключите webhook проекта Bitbucket на <code>/webhooks/bitbucket</code> с событиями
+          <code>pr:opened</code>, <code>pr:from_ref_updated</code>, <code>pr:merged</code>, <code>pr:declined</code>, <code>pr:reviewer:needs_work</code>.</p>
+      </div>
+      {% else %}
+      <ul class="events">
+        {% for e in events %}
+        <li class="event">
+          <div class="event-row">
+            <span class="badge badge-{{ e.status }}">{{ status_titles.get(e.status, e.status) }}</span>
+            <strong>{{ event_titles.get(e.event_type, e.event_type) }}</strong>
+            <span class="muted">{{ e.payload.repository_slug }} #{{ e.payload.pull_request_id }}</span>
+            <time class="muted">{{ e.received_at.strftime('%H:%M:%S') }}</time>
+          </div>
+          <div class="event-key" title="Ключ идемпотентности">{{ e.idempotency_key }}</div>
+          <div class="event-meta">
+            {% if e.attempts %}попыток: {{ e.attempts }}{% endif %}
+            {% if e.duplicate_count %} · повторных доставок: {{ e.duplicate_count }}{% endif %}
+            {% if e.result and e.result.created_issues %} · создано: {{ e.result.created_issues | join(', ') }}{% endif %}
+            {% if e.result and e.result.reconciled_issues %} · найдено в Jira при сверке: {{ e.result.reconciled_issues | join(', ') }}{% endif %}
+            {% if e.status == 'failed' and e.next_retry_at %} · следующий повтор {{ e.next_retry_at.strftime('%H:%M:%S') }}{% endif %}
+          </div>
+          {% if e.last_error %}<div class="event-error">{{ e.last_error }}</div>{% endif %}
+          {% if e.status in ['failed', 'dead', 'rejected'] %}
+          <form method="post" action="/ui/events/{{ e.id }}/retry">
+            <button class="btn btn-small" type="submit">Обработать повторно</button>
+          </form>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Перепроверить PR</h2></div>
+      <p class="muted small">Если webhook потерялся: сервис прочитает актуальное состояние PR через REST API и выполнит переход. Повторный вызов не создаёт дубликатов.</p>
+      <form class="stack-form" method="post" action="/ui/recheck">
+        <label>Проект <input name="project_key" value="SPEC" required></label>
+        <label>Репозиторий <input name="repository_slug" value="business-specs" required></label>
+        <label>PR <input name="pull_request_id" type="number" min="1" placeholder="1" required></label>
+        <button class="btn" type="submit">Перепроверить</button>
+      </form>
+    </section>
+  </aside>
+</div>
