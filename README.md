@@ -96,15 +96,254 @@ sdd open-pr --change CHG-1042 --stage implementation --jira DEV-231 --project AP
 
 ## Подключение к реальным Jira и Bitbucket
 
-1. Скопируйте `.env.example` в `.env`, укажите `SDD_JIRA_BASE_URL`, `SDD_BITBUCKET_BASE_URL`, токены
-   сервисных учётных записей (Personal Access Token, `Bearer`) и `SDD_PUBLIC_URL`.
-2. Настройте проекты и типы задач (`SDD_JIRA_*_PROJECT`, `*_ISSUE_TYPE`), обязательные поля
-   передайте через `SDD_JIRA_*_EXTRA_FIELDS`.
-3. `sdd register-webhook --project SPEC` (и для проекта приложения); задайте `SDD_BITBUCKET_WEBHOOK_SECRET`.
-4. `sdd check` — проверит типы задач через createmeta и наличие webhook.
+Сервис не заменяет Jira, Bitbucket и CI. Он подписывается на webhook существующих репозиториев,
+читает состояние PR через REST и создаёт задачи в существующих проектах Jira. Workflow, доски
+и права команд не меняются. Ниже — порядок подключения к **Jira Data Center / Server** и
+**Bitbucket Data Center / Server**. Cloud (atlassian.net / bitbucket.org) не проверялся.
 
-Маршруты REST соответствуют документации DC, но версию API и доступные события нужно проверить на
-установленном экземпляре (раздел 4.1): например, наличие `properties.mergeCommit` в ответе PR.
+Начните с **тестовых** проектов или тестовых экземпляров, затем подключайте один пилотный репозиторий.
+
+### 0. Что собрать заранее
+
+| Что нужно | Пример | Переменная |
+|---|---|---|
+| Базовый URL Jira | `https://jira.company.ru` | `SDD_JIRA_BASE_URL` |
+| Базовый URL Bitbucket | `https://bitbucket.company.ru` | `SDD_BITBUCKET_BASE_URL` |
+| Публичный URL сервиса (его должен видеть Bitbucket) | `https://sdd.company.ru` | `SDD_PUBLIC_URL` |
+| Проект и тип задачи, в котором заводят идеи | проект `PROD`, тип `Epic` | `SDD_JIRA_IDEA_ISSUE_TYPE` |
+| Куда создавать задачи системного анализа | проект `ARCH`, тип `Task` | `SDD_JIRA_ANALYSIS_PROJECT`, `SDD_JIRA_ANALYSIS_ISSUE_TYPE` |
+| Куда создавать задачи разработки | проект команды `LOANS`, тип `Story` | `SDD_JIRA_DEV_PROJECT`, `SDD_JIRA_DEV_ISSUE_TYPE` |
+| Репозиторий спецификаций | `SPEC/business-specs` | `SDD_SPEC_REPOSITORIES` |
+| Пилотный репозиторий кода | `LOANS/loan-service` | `SDD_CODE_REPOSITORIES` |
+| Целевая ветка merge | `master` или `develop` | `SDD_TARGET_BRANCHES` |
+| Имя перехода «готово» в workflow команды | `Готово` / `Done` / `Resolve` | `SDD_JIRA_DONE_TRANSITION` |
+| Обязательные поля при создании задач | компонент, `customfield_10010` | `SDD_JIRA_*_EXTRA_FIELDS` |
+
+Формат репозитория везде `PROJECT_KEY/repository-slug`. Несколько значений — через запятую.
+
+### 1. Jira Data Center
+
+1. Создайте сервисную учётную запись, например `svc-sdd`, и её **Personal Access Token**
+   (Profile → Personal Access Tokens). Токен передаётся как `Authorization: Bearer`.
+2. Права учётки:
+   - проекты анализа и разработки: Browse Projects, Create Issues, Link Issues, Add Comments, Transition Issues;
+   - проект идей: Browse Projects, Link Issues (создание идей не нужно).
+3. Тип задачи для идей — любой существующий (`Epic`, `Story`, `Business Idea`). Укажите точное имя
+   в `SDD_JIRA_IDEA_ISSUE_TYPE`. Пустая строка отключает проверку типа.
+4. Обязательные поля идеи — в `SDD_JIRA_IDEA_REQUIRED_FIELDS` (имена из REST, через запятую),
+   например `summary,description` или `summary,description,customfield_12345`.
+5. На экране **создания** задач анализа и разработки должно быть поле **Labels**. Сервис ставит
+   служебную метку `sdd-op-<hash>` и по ней ищет задачу при повторной обработке. Без Labels Jira
+   ответит 400 на `POST /rest/api/2/issue`.
+6. Проверьте типы связей: `GET /rest/api/2/issueLinkType`. Нужны имена, которые стоят в
+   `SDD_JIRA_RELATES_LINK_TYPE` (по умолчанию `Relates`) и `SDD_JIRA_BLOCKS_LINK_TYPE` (`Blocks`).
+   Если в инсталляции другие имена — поменяйте переменные.
+7. Узнайте точное имя перехода в статус «готово» в workflow задач разработки и укажите его в
+   `SDD_JIRA_DONE_TRANSITION`. Если перехода нет или двигать статус не нужно — оставьте пустым:
+   сервис пропустит переход и напишет предупреждение в лог.
+8. Обязательные кастомные поля, компоненты, Epic Link передайте JSON-объектом в
+   `SDD_JIRA_ANALYSIS_EXTRA_FIELDS` / `SDD_JIRA_DEV_EXTRA_FIELDS`. Объект сливается в `fields`
+   запроса создания задачи:
+
+   ```bash
+   SDD_JIRA_DEV_EXTRA_FIELDS={"components":[{"name":"loan-service"}]}
+   ```
+
+9. Если UI Jira открывается с другого хоста, чем REST, задайте `SDD_JIRA_BROWSE_URL`
+   (ссылки в комментариях и на дашборде). Иначе используется `SDD_JIRA_BASE_URL`.
+
+Проверка типов задач (после заполнения `.env`):
+
+```bash
+uv run sdd check
+```
+
+Команда читает `GET /rest/api/2/issue/createmeta/{project}/issuetypes`.
+
+### 2. Bitbucket Data Center
+
+1. Создайте репозиторий спецификаций (или используйте существующий) и наполните его содержимым
+   `openspec-templates/business-specs/`. В настройках репозитория: default reviewers, merge check
+   «минимум N approvals» (`N` = `SDD_MIN_APPROVALS`), запрет прямого push в целевую ветку.
+2. В пилотный репозиторий кода добавьте `AGENTS.md`, `openspec/config.yaml` и `prompts/developer.md`
+   из `openspec-templates/application-repo/`. В `.gitignore` — строку `.sdd/`.
+3. Сервисная учётка Bitbucket, например `svc-sdd`, с Personal Access Token. Достаточно прав
+   **чтения** на оба репозитория плюс комментарии к PR (Read + комментирование). Merge сервис
+   не выполняет.
+4. Webhook вешайте **на репозиторий**, не на весь проект: иначе придут события всех PR команды.
+   Repository settings → Webhooks → Create webhook:
+   - URL: `{SDD_PUBLIC_URL}/webhooks/bitbucket` (например `https://sdd.company.ru/webhooks/bitbucket`);
+   - Secret: случайная строка, та же в `SDD_BITBUCKET_WEBHOOK_SECRET`;
+   - события: `pr:opened`, `pr:from_ref_updated`, `pr:merged`, `pr:declined`,
+     `pr:reviewer:needs_work`, `pr:reviewer:approved`;
+   - SSL / TLS включён.
+   Кнопка Test connection должна получить ответ сервиса (`{"status":"pong"}` на `diagnostics:ping`).
+
+   `sdd register-webhook --project SPEC` создаёт webhook **проекта**, не репозитория. Для пилота
+   в рабочем пространстве команды используйте UI репозитория, как выше. Команда `sdd check`
+   сейчас тоже ищет только webhook проекта — после настройки репозиторного webhook она может
+   написать «НЕТ»; это не ошибка конфигурации репозитория.
+
+5. Проверьте на **вашей** версии Bitbucket, что в ответе слитого PR есть merge commit:
+
+   ```http
+   GET /rest/api/latest/projects/{key}/repos/{slug}/pull-requests/{id}
+   ```
+
+   Ожидается `properties.mergeCommit.id`. Без этого поля сервис не сможет построить ключ
+   идемпотентности и будет повторять обработку (`NotReady`).
+
+6. Соглашение об именах веток не обязательно. Если ветка не `feature/<CHG>-business-spec` /
+   `…-system-spec` / `…-<JIRA>-implementation`, в описании PR должны быть строки:
+
+   ```
+   Change ID: CHG-1042
+   Stage: business_specification
+   Jira: IDEA-123
+   ```
+
+   Для кода `Stage: implementation` и `Jira: DEV-231`. Команда `sdd open-pr` пишет эти строки сама.
+
+### 3. CI
+
+1. Статусы сборок репозитория **кода** должны попадать в Bitbucket Build Status API
+   (`/rest/build-status/1.0/commits/{sha}`), состояния `SUCCESSFUL` / `FAILED` / `INPROGRESS`.
+   Bamboo делает это из коробки, Jenkins — через плагин Bitbucket Server Integration.
+2. Если CI статусы в Bitbucket не публикует, задайте `SDD_REQUIRE_CI=false`. Иначе после merge
+   кода сервис будет ждать сборку и не закроет задачу.
+3. Для репозитория спецификаций (необязательно) добавьте required build:
+
+   ```bash
+   uv run sdd validate openspec/changes/<CHG>/business-spec.md --type business --change <CHG>
+   uv run sdd validate openspec/changes/<CHG>/functional-spec.md --type functional --change <CHG>
+   ```
+
+### 4. Инфраструктура сервиса
+
+1. Один экземпляр (VM, Docker или существующий Kubernetes). Образ: `Dockerfile`.
+2. PostgreSQL — отдельная база или схема. Для схемы `sdd`:
+
+   ```bash
+   SDD_DATABASE_URL=postgresql+psycopg://sdd:***@db.company.ru:5432/platform?options=-csearch_path%3Dsdd
+   ```
+
+   Таблицы создаются при старте (`SDD_AUTO_MIGRATE=true`). Чтобы накатывать миграции отдельно:
+   `uv run sdd migrate` и `SDD_AUTO_MIGRATE=false`.
+3. Reverse proxy с внутренним TLS, DNS вида `sdd.company.ru`. Bitbucket должен достучаться до
+   сервиса по HTTPS; сервис — до REST Jira и Bitbucket и до PostgreSQL.
+4. Секреты (токены Jira/Bitbucket, секрет webhook, пароль БД) — в корпоративном secret manager
+   или в `--env-file`, не в git.
+5. Дашборд и `/api/*` сейчас **без аутентификации**. Для пилота закройте их SSO / Basic Auth
+   на reverse proxy. Путь `/webhooks/bitbucket` уже проверяет HMAC-подпись, его не закрывайте
+   формой логина.
+6. Мониторинг: `/health` — liveness; `/metrics` — Prometheus. Имеет смысл алертить на
+   `sdd_events{status="dead"}` и `sdd_events{status="failed"}`.
+
+Запуск сервиса без моков:
+
+```bash
+cp .env.example .env          # заполните URL, токены, проекты, репозитории
+uv sync
+uv run sdd serve              # слушает SDD_HOST:SDD_PORT, по умолчанию 127.0.0.1:48080
+```
+
+Или Docker:
+
+```bash
+docker build -t sdd-orchestrator .
+docker run --rm -p 48080:48080 --env-file .env sdd-orchestrator
+```
+
+### 5. Файл `.env`
+
+Скопируйте `.env.example` и замените моковые URL. Минимальный рабочий набор:
+
+```bash
+SDD_PUBLIC_URL=https://sdd.company.ru
+SDD_DATABASE_URL=postgresql+psycopg://sdd:***@db.company.ru:5432/sdd
+
+SDD_BITBUCKET_BASE_URL=https://bitbucket.company.ru
+SDD_BITBUCKET_TOKEN=***
+SDD_BITBUCKET_WEBHOOK_SECRET=***
+SDD_SPEC_REPOSITORIES=SPEC/business-specs
+SDD_CODE_REPOSITORIES=LOANS/loan-service
+SDD_TARGET_BRANCHES=master
+SDD_MIN_APPROVALS=1
+SDD_REQUIRE_CI=true
+
+SDD_JIRA_BASE_URL=https://jira.company.ru
+SDD_JIRA_TOKEN=***
+SDD_JIRA_IDEA_ISSUE_TYPE=Epic
+SDD_JIRA_IDEA_REQUIRED_FIELDS=summary,description
+SDD_JIRA_ANALYSIS_PROJECT=ARCH
+SDD_JIRA_ANALYSIS_ISSUE_TYPE=Task
+SDD_JIRA_DEV_PROJECT=LOANS
+SDD_JIRA_DEV_ISSUE_TYPE=Story
+SDD_JIRA_DONE_TRANSITION=Готово
+SDD_JIRA_DEV_EXTRA_FIELDS={"components":[{"name":"loan-service"}]}
+```
+
+Вместо PAT можно задать basic auth: `SDD_JIRA_USERNAME` / `SDD_JIRA_PASSWORD` и то же для Bitbucket.
+Если указан токен, username/password не используются.
+
+Если шаблоны путей к спецификациям в вашем репозитории другие, задайте
+`SDD_BUSINESS_SPEC_PATH` и `SDD_FUNCTIONAL_SPEC_PATH` (плейсхолдер `{change_id}`).
+
+### 6. Клиенты аналитиков и разработчиков
+
+CLI ходит в живые Jira/Bitbucket с **личной** учётной записью: PR создаётся от имени владельца токена.
+
+```bash
+export SDD_PUBLIC_URL=https://sdd.company.ru
+export SDD_BITBUCKET_BASE_URL=https://bitbucket.company.ru
+export SDD_BITBUCKET_TOKEN=          # личный PAT
+export SDD_JIRA_BASE_URL=https://jira.company.ru
+export SDD_JIRA_TOKEN=               # личный PAT, нужен для sdd start-dev
+```
+
+Дальше — те же команды, что в разделе «Процесс для участников», с вашими ключами проектов:
+
+```bash
+sdd start IDEA-123 --author "Иванова А. С."
+sdd open-pr --change CHG-1042 --stage business --jira IDEA-123 --project SPEC --repo business-specs
+
+sdd start-system CHG-1042 --component loan-service
+sdd open-pr --change CHG-1042 --stage system --project SPEC --repo business-specs
+
+sdd start-dev CHG-1042 DEV-231
+sdd open-pr --change CHG-1042 --stage implementation --jira DEV-231 --project LOANS --repo loan-service
+```
+
+### 7. Проверка на тестовом изменении
+
+1. Создайте в Jira задачу-идею с заполненными обязательными полями.
+2. `sdd start <KEY>` — в ответе Change ID и имя ветки. На дашборде сервиса появляется изменение.
+3. Заполните бизнес-спецификацию, `sdd validate`, `sdd open-pr --stage business`.
+4. В Bitbucket: approve → merge. В Jira должна появиться **ровно одна** задача системного анализа
+   со ссылкой на Change ID и commit спецификации.
+5. Повторите webhook (Webhooks → View details → Resend): вторая задача **не** создаётся.
+   На дашборде растёт «Предотвращено дубликатов».
+6. То же для функциональной спецификации — появляются связанные задачи разработки.
+7. Для одной задачи разработки: `sdd start-dev`, PR, CI `SUCCESSFUL`, approve, merge — задача
+   переходит в «готово».
+
+Если Jira недоступна в момент merge, событие уходит в повтор (`failed` → обработчик повторов).
+После восстановления токена или сети задача создаётся без ручных правок БД. Если Jira успела
+создать задачу, но ответ до сервиса не дошёл, повторная обработка находит её по метке `sdd-op-…`
+и дубликат не создаёт.
+
+### 8. Ограничения текущего кода на живых репозиториях
+
+Имейте в виду до пилота в общем репозитории команды:
+
+1. PR без строк `Change ID` / `Stage` в подключённом репозитории сервис **отклоняет комментарием**.
+   Обычные PR команды получат сообщение «PR не принят в процесс». Для общего репозитория это нужно
+   сначала поменять (молча игнорировать такие PR).
+2. Задачи разработки всегда создаются в одном `SDD_JIRA_DEV_PROJECT`. Несколько командных
+   пространств из коробки не разводятся.
+3. Дашборд и REST API без встроенной аутентификации — закрывайте на proxy.
+4. `sdd register-webhook` / `sdd check` работают с webhook **проекта**. Репозиторный webhook
+   настраивается вручную (шаг 2.4).
 
 ## Схема OpenSpec
 
