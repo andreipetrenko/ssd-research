@@ -124,6 +124,26 @@ def create_mock_app(state: MockState | None = None) -> FastAPI:
         issue = state.create_issue(body.get("fields", {}))
         return {"id": issue["id"], "key": issue["key"], "self": issue["self"]}
 
+    @app.get(JIRA + "/issue/createmeta/{project}/issuetypes")
+    def createmeta(project: str):
+        if project not in state.projects:
+            raise MockError(404, f"Project {project} not found")
+        types = state.projects[project]["types"]
+        return {"values": [{"id": str(i + 1), "name": name, "subtask": False} for i, name in enumerate(types)]}
+
+    @app.get(JIRA + "/issue/createmeta")
+    def createmeta_fields(projectKeys: str = "", issuetypeNames: str = ""):  # noqa: N803
+        project = projectKeys
+        if project not in state.projects:
+            return {"projects": []}
+        types = [{"id": str(i + 1), "name": name, "fields": {
+            "summary": {"required": True, "name": "Summary"},
+            "description": {"required": name == "Business Idea", "name": "Description"},
+            "issuetype": {"required": True, "name": "Issue Type"},
+            "project": {"required": True, "name": "Project"},
+        }} for i, name in enumerate(state.projects[project]["types"]) if not issuetypeNames or name == issuetypeNames]
+        return {"projects": [{"key": project, "issuetypes": types}]}
+
     @app.get(JIRA + "/issue/{key}")
     def get_issue(key: str):
         issue = state.issue(key)
@@ -168,26 +188,6 @@ def create_mock_app(state: MockState | None = None) -> FastAPI:
     @app.post(JIRA + "/issue/{key}/transitions", status_code=204)
     def do_transition(key: str, body: dict = Body(...)):
         state.transition(key, body["transition"]["id"])
-
-    @app.get(JIRA + "/issue/createmeta/{project}/issuetypes")
-    def createmeta(project: str):
-        if project not in state.projects:
-            raise MockError(404, f"Project {project} not found")
-        types = state.projects[project]["types"]
-        return {"values": [{"id": str(i + 1), "name": name, "subtask": False} for i, name in enumerate(types)]}
-
-    @app.get(JIRA + "/issue/createmeta")
-    def createmeta_fields(projectKeys: str = "", issuetypeNames: str = ""):  # noqa: N803
-        project = projectKeys
-        if project not in state.projects:
-            return {"projects": []}
-        types = [{"id": str(i + 1), "name": name, "fields": {
-            "summary": {"required": True, "name": "Summary"},
-            "description": {"required": name == "Business Idea", "name": "Description"},
-            "issuetype": {"required": True, "name": "Issue Type"},
-            "project": {"required": True, "name": "Project"},
-        }} for i, name in enumerate(state.projects[project]["types"]) if not issuetypeNames or name == issuetypeNames]
-        return {"projects": [{"key": project, "issuetypes": types}]}
 
     # --- mock control API (used by the demo script and tests) -------------------------------------
 
