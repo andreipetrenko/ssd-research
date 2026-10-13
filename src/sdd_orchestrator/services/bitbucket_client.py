@@ -58,15 +58,49 @@ class BitbucketClient(RestClient):
         data = self.request("GET", f"/rest/build-status/1.0/commits/{quote(commit)}")
         return data.get("values", [])
 
+    WEBHOOK_EVENTS = [
+        "pr:opened", "pr:from_ref_updated", "pr:merged", "pr:declined",
+        "pr:reviewer:needs_work", "pr:reviewer:approved",
+    ]
+
+    def get_repository(self, project_key: str, repository_slug: str) -> dict | None:
+        return self.request("GET", self._repo(project_key, repository_slug), allow_404=True)
+
     def list_webhooks(self, project_key: str) -> list[dict]:
         return self.request("GET", f"{API}/projects/{quote(project_key)}/webhooks").get("values", [])
 
+    def list_repo_webhooks(self, project_key: str, repository_slug: str) -> list[dict]:
+        return self.request("GET", f"{self._repo(project_key, repository_slug)}/webhooks").get("values", [])
+
     def create_webhook(self, project_key: str, *, name: str, url: str, events: list[str],
                        secret: str = "") -> dict:
+        return self._create_webhook(f"{API}/projects/{quote(project_key)}/webhooks", name, url, events, secret)
+
+    def create_repo_webhook(self, project_key: str, repository_slug: str, *, name: str, url: str,
+                            events: list[str], secret: str = "") -> dict:
+        return self._create_webhook(
+            f"{self._repo(project_key, repository_slug)}/webhooks", name, url, events, secret
+        )
+
+    def _create_webhook(self, path: str, name: str, url: str, events: list[str], secret: str) -> dict:
         body: dict = {"name": name, "url": url, "events": events, "active": True}
         if secret:
             body["configuration"] = {"secret": secret}
-        return self.request("POST", f"{API}/projects/{quote(project_key)}/webhooks", json=body)
+        return self.request("POST", path, json=body)
+
+    def webhook_targets(self, hooks: list[dict], public_url: str) -> list[dict]:
+        prefix = public_url.rstrip("/")
+        return [hook for hook in hooks if str(hook.get("url") or "").startswith(prefix)]
+
+    def ensure_repo_webhook(self, project_key: str, repository_slug: str, *, url: str, secret: str = "") -> dict:
+        existing = self.webhook_targets(self.list_repo_webhooks(project_key, repository_slug), url)
+        if existing:
+            return {"created": False, **existing[0]}
+        hook = self.create_repo_webhook(
+            project_key, repository_slug, name="SDD Orchestrator", url=url,
+            events=self.WEBHOOK_EVENTS, secret=secret,
+        )
+        return {"created": True, **hook}
 
     def browse_url(self, project_key: str, repository_slug: str, path: str, at: str) -> str:
         return (f"{self.base_url}/projects/{quote(project_key)}/repos/{quote(repository_slug)}"

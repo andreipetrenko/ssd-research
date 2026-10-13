@@ -80,6 +80,10 @@ def create_mock_app(state: MockState | None = None) -> FastAPI:
     def raw(project: str, slug: str, path: str, at: str | None = None):
         return state.file_at(project, slug, path, at)
 
+    @app.get(BB + "")
+    def get_repo(project: str, slug: str):
+        return state.repo(project, slug).to_json()
+
     @app.get("/rest/api/latest/projects/{project}/webhooks")
     def list_webhooks(project: str):
         values = state.webhooks.get(project, [])
@@ -89,6 +93,19 @@ def create_mock_app(state: MockState | None = None) -> FastAPI:
     def create_webhook(project: str, body: dict = Body(...)):
         hook = {"id": next(state.sequence), "active": True, **body}
         state.webhooks.setdefault(project, []).append(hook)
+        return hook
+
+    @app.get(BB + "/webhooks")
+    def list_repo_webhooks(project: str, slug: str):
+        state.repo(project, slug)
+        values = state.webhooks.get(f"{project}/{slug}", [])
+        return {"size": len(values), "isLastPage": True, "values": values}
+
+    @app.post(BB + "/webhooks", status_code=201)
+    def create_repo_webhook(project: str, slug: str, body: dict = Body(...)):
+        state.repo(project, slug)
+        hook = {"id": next(state.sequence), "active": True, **body}
+        state.webhooks.setdefault(f"{project}/{slug}", []).append(hook)
         return hook
 
     @app.get("/rest/build-status/1.0/commits/{commit}")
@@ -158,6 +175,19 @@ def create_mock_app(state: MockState | None = None) -> FastAPI:
             raise MockError(404, f"Project {project} not found")
         types = state.projects[project]["types"]
         return {"values": [{"id": str(i + 1), "name": name, "subtask": False} for i, name in enumerate(types)]}
+
+    @app.get(JIRA + "/issue/createmeta")
+    def createmeta_fields(projectKeys: str = "", issuetypeNames: str = ""):  # noqa: N803
+        project = projectKeys
+        if project not in state.projects:
+            return {"projects": []}
+        types = [{"id": str(i + 1), "name": name, "fields": {
+            "summary": {"required": True, "name": "Summary"},
+            "description": {"required": name == "Business Idea", "name": "Description"},
+            "issuetype": {"required": True, "name": "Issue Type"},
+            "project": {"required": True, "name": "Project"},
+        }} for i, name in enumerate(state.projects[project]["types"]) if not issuetypeNames or name == issuetypeNames]
+        return {"projects": [{"key": project, "issuetypes": types}]}
 
     # --- mock control API (used by the demo script and tests) -------------------------------------
 

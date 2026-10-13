@@ -36,7 +36,8 @@ def test_full_flow_from_idea_to_merged_code(harness):
     fields = analysis[0]["fields"]
     assert fields["summary"].startswith(f"[SDD] Системный анализ: {change_id}")
     assert f"Change ID: {change_id}" in fields["description"]
-    assert {"sdd", change_id} <= set(fields["labels"])
+    assert f"Change ID: {change_id}" in fields["description"]
+    assert "SDD-OP:" in fields["description"]
     assert "IDEA-123" in {link.get("outwardIssue", {}).get("key") for link in fields["issuelinks"]}
     assert any("метаданные и документ проверены" in c for c in harness.comments(business_pr))
     assert any(analysis[0]["key"] in c for c in harness.comments(business_pr))
@@ -194,8 +195,8 @@ def test_pr_from_unknown_repository_or_without_change_id_is_not_processed(harnes
     harness.push("feature/no-convention", {"notes.md": "x"})
     pr = harness.open_pr("feature/no-convention", "просто PR")
     body = harness.flush()[0]["body"]
-    assert body["status"] == "rejected"
-    assert any("PR не принят" in c for c in harness.comments(pr))
+    assert body["status"] == "ignored"
+    assert harness.comments(pr) == []
 
 
 def test_webhook_signature_is_verified(harness, settings):

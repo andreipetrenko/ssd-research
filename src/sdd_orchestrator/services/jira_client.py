@@ -58,6 +58,39 @@ class JiraClient(RestClient):
         data = self.request("GET", f"{API}/issue/createmeta/{quote(project_key)}/issuetypes")
         return data.get("values", [])
 
+    def get_create_fields(self, project_key: str, issue_type: str) -> dict[str, dict]:
+        """Required/optional fields on the Create screen. Empty dict if the instance has no createmeta expand."""
+        data = self.request(
+            "GET",
+            f"{API}/issue/createmeta",
+            params={
+                "projectKeys": project_key,
+                "issuetypeNames": issue_type,
+                "expand": "projects.issuetypes.fields",
+            },
+        )
+        fields: dict[str, dict] = {}
+        for project in data.get("projects", []):
+            for itype in project.get("issuetypes", []):
+                if itype.get("name") != issue_type:
+                    continue
+                fields.update(itype.get("fields") or {})
+        return fields
+
+    def list_link_types(self) -> list[dict]:
+        return self.request("GET", f"{API}/issueLinkType").get("issueLinkTypes", [])
+
+    def resolve_link_type(self, preferred: str, aliases: list[str]) -> str:
+        names = [item.get("name", "") for item in self.list_link_types()]
+        for candidate in [preferred, *aliases]:
+            if candidate in names:
+                return candidate
+        lowered = {name.lower(): name for name in names}
+        for candidate in [preferred, *aliases]:
+            if candidate.lower() in lowered:
+                return lowered[candidate.lower()]
+        return preferred
+
     def browse_url(self, browse_base: str, key: str) -> str:
         return f"{browse_base.rstrip('/')}/browse/{quote(key)}"
 

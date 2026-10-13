@@ -1,0 +1,39 @@
+# Локальный запуск обычно не нужен: `uv run sdd up` сам найдёт PostgreSQL
+# или поднимет сервис db. Профиль app — когда хотите крутить оркестратор в Docker
+# после `sdd init` (нужен файл .env).
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sdd
+      POSTGRES_PASSWORD: sdd
+      POSTGRES_DB: sdd
+    ports:
+      - "5432:5432"
+    volumes:
+      - sdd-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sdd"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    profiles: ["app"]
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SDD_DATABASE_URL: postgresql+psycopg://sdd:sdd@db:5432/sdd
+      SDD_HOST: 0.0.0.0
+      SDD_PORT: 48080
+    ports:
+      - "48080:48080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  sdd-pg:

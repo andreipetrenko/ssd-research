@@ -326,7 +326,14 @@ class MockState:
         return copy
 
     def _prepare_delivery(self, repo: Repo, pr: dict, event_key: str) -> list[Delivery]:
-        hooks = [h for h in self.webhooks.get(repo.project, []) if h["active"] and event_key in h["events"]]
+        seen: set[str] = set()
+        hooks = []
+        for key in (repo.project, f"{repo.project}/{repo.slug}"):
+            for hook in self.webhooks.get(key, []):
+                if not hook["active"] or event_key not in hook["events"] or hook["url"] in seen:
+                    continue
+                seen.add(hook["url"])
+                hooks.append(hook)
         deliveries = []
         for hook in hooks:
             body = json.dumps({
@@ -438,12 +445,20 @@ class MockState:
 
         self.jira_gate("GET /search")
         labels = re.findall(r'labels\s*=\s*"?([^"\s]+)"?', jql)
+        needles = re.findall(r'(?:description|text)\s*~\s*"([^"]+)"', jql)
         projects = re.findall(r'project\s*=\s*"?(\w+)"?', jql)
         with self.lock:
             result = []
             for issue in self.issues.values():
                 fields = issue["fields"]
+                blob = " ".join([
+                    str(fields.get("description") or ""),
+                    str(fields.get("summary") or ""),
+                    " ".join(fields.get("labels") or []),
+                ])
                 if any(label not in fields["labels"] for label in labels):
+                    continue
+                if any(needle not in blob for needle in needles):
                     continue
                 if projects and fields["project"]["key"] not in projects:
                     continue

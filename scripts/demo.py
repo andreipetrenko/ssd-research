@@ -1,4 +1,4 @@
-"""End-to-end demo against running servers: `sdd mocks` (port 48090) and `sdd serve` (port 48080).
+"""End-to-end demo against `uv run sdd up` (дашборд :48080, моки :48090).
 
     uv run python scripts/demo.py               # whole flow: idea → specs → Jira → code PRs
     uv run python scripts/demo.py --fault       # plus a Jira crash after issue creation (Demo 5)
@@ -134,7 +134,7 @@ def main() -> int:
     demo.pr("SPEC", "business-specs", business_pr, "redeliver")
     time.sleep(1.5)
     anl = [i for i in demo.mock.get("/mock/state").json()["issues"].values()
-           if change_id in i["fields"]["labels"] and i["fields"]["project"]["key"] == "ANL"]
+           if i["fields"]["project"]["key"] == "ANL" and change_id in i["fields"].get("description", "")]
     demo.info(f"Webhook pr:merged отправлен повторно; задач системного анализа в Jira: {len(anl)}")
 
     demo.step("Демо 3. Системный анализ")

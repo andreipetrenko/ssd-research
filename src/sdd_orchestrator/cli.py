@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -290,48 +291,123 @@ def cmd_open_pr(args) -> int:
     return 0
 
 
-def cmd_check(_args) -> int:
-    from .container import build_services
-    from .services.http import IntegrationError
+def cmd_init(args) -> int:
+    from .settings import Settings, get_settings
+    from .setup import collect_init_values, print_report, register_configured_webhooks, run_doctor, write_env
 
-    settings = get_settings()
-    services = build_services(settings)
-    ok = True
-    for project, issue_type in ((settings.jira_analysis_project, settings.jira_analysis_issue_type),
-                                (settings.jira_dev_project, settings.jira_dev_issue_type)):
+    values = collect_init_values(args)
+    path = Path(args.env_file)
+    write_env(path, values)
+    print(f"Записал настройки в {path}")
+    get_settings.cache_clear()
+    settings = Settings(_env_file=path)
+    if args.register_webhooks:
         try:
-            types = [t["name"] for t in services.jira.get_issue_types(project)]
-            status = "OK" if issue_type in types else "НЕТ ТИПА"
-            ok &= issue_type in types
-            print(f"Jira {project}: типы {', '.join(types)} → «{issue_type}»: {status}")
-        except IntegrationError as exc:
-            ok = False
-            print(f"Jira {project}: {exc}")
-    projects = {repo.split("/")[0] for repo in settings.spec_repository_list + settings.code_repository_list}
-    for project in sorted(projects):
-        try:
-            hooks = services.bitbucket.list_webhooks(project)
-            target = [h for h in hooks if h.get("url", "").startswith(settings.public_url)]
-            ok &= bool(target)
-            print(f"Bitbucket {project}: webhook на {settings.public_url}: {'есть' if target else 'НЕТ'}")
-        except IntegrationError as exc:
-            ok = False
-            print(f"Bitbucket {project}: {exc}")
-    return 0 if ok else 1
+            for line in register_configured_webhooks(settings):
+                print(line)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Webhook пока не создался: {exc}")
+            print("Потом: uv run sdd register-webhook --all")
+    report = run_doctor(settings=settings)
+    print_report(report)
+    return 0 if report.ok else 1
+
+
+def cmd_doctor(_args) -> int:
+    from .setup import print_report, run_doctor
+
+    report = run_doctor()
+    print_report(report)
+    return 0 if report.ok else 1
+
+
+def cmd_check(_args) -> int:
+    return cmd_doctor(_args)
 
 
 def cmd_register_webhook(args) -> int:
     from .container import build_services
+    from .setup import register_configured_webhooks, split_repo
 
     settings = get_settings()
-    hook = build_services(settings).bitbucket.create_webhook(
-        args.project, name="SDD Orchestrator", url=f"{settings.public_url}/webhooks/bitbucket",
-        events=["pr:opened", "pr:from_ref_updated", "pr:merged", "pr:declined", "pr:reviewer:needs_work",
-                "pr:reviewer:approved"],
+    url = settings.public_url.rstrip("/") + "/webhooks/bitbucket"
+    if args.all or (not args.project and not args.repo):
+        for line in register_configured_webhooks(settings):
+            print(line)
+        return 0
+    bitbucket = build_services(settings).bitbucket
+    if args.repo:
+        project, slug = split_repo(args.repo)
+        result = bitbucket.ensure_repo_webhook(project, slug, url=url, secret=settings.bitbucket_webhook_secret)
+        print(f"{project}/{slug}: webhook {'создан' if result.get('created') else 'уже был'}")
+        return 0
+    hook = bitbucket.create_webhook(
+        args.project, name="SDD Orchestrator", url=url, events=bitbucket.WEBHOOK_EVENTS,
         secret=settings.bitbucket_webhook_secret,
     )
     print(f"webhook #{hook.get('id')} создан для проекта {args.project}")
     return 0
+
+
+def _wait_http(url: str, timeout: float = 8) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            httpx.get(url, timeout=0.4)
+            return True
+        except httpx.HTTPError:
+            time.sleep(0.15)
+    return False
+
+
+def _start_mocks(host: str, port: int) -> subprocess.Popen[Any] | None:
+    url = f"http://{host}:{port}/"
+    if _wait_http(url, timeout=0.6):
+        print(f"Моки уже запущены: {url}")
+        return None
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "sdd_orchestrator.cli", "mocks", "--host", host, "--port", str(port)]
+    )
+    if _wait_http(url):
+        print(f"Моки Bitbucket/Jira: {url}")
+        return proc
+    proc.terminate()
+    raise SystemExit("не удалось запустить моки на порту " + str(port))
+
+
+def cmd_up(args) -> int:
+    from .setup import ensure_database, uses_local_mocks
+
+    if args.docker:
+        compose = PROJECT_ROOT / "docker-compose.yml"
+        if not compose.exists():
+            return _fail("нет docker-compose.yml")
+        cmd = ["docker", "compose", "-f", str(compose), "--profile", "app", "up", "-d"]
+        if args.build:
+            cmd.append("--build")
+        print(" ".join(cmd))
+        result = subprocess.run(cmd, check=False)
+        if result.returncode != 0:
+            return result.returncode
+        print("Сервис: http://127.0.0.1:48080/")
+        return 0
+
+    settings = get_settings()
+    print(ensure_database(settings.database_url))
+    mock_proc = None
+    if not args.no_mocks and uses_local_mocks(settings):
+        mock_proc = _start_mocks(args.mock_host, args.mock_port)
+    print(f"Дашборд: {settings.public_url}")
+    print("Остановка: Ctrl+C\n")
+    try:
+        return cmd_serve(args)
+    finally:
+        if mock_proc and mock_proc.poll() is None:
+            mock_proc.terminate()
+            try:
+                mock_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                mock_proc.kill()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -352,11 +428,49 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("migrate", help="применить миграции PostgreSQL").set_defaults(func=cmd_migrate)
     sub.add_parser("worker", help="отдельный процесс обработчика повторов").set_defaults(func=cmd_worker)
-    sub.add_parser("check", help="проверить доступ к Jira/Bitbucket и настройки").set_defaults(func=cmd_check)
+    sub.add_parser("doctor", help="проверить, что Jira, Bitbucket, база и webhook готовы").set_defaults(func=cmd_doctor)
+    sub.add_parser("check", help="то же, что doctor").set_defaults(func=cmd_check)
 
-    p = sub.add_parser("register-webhook", help="создать webhook проекта Bitbucket на этот сервис")
-    p.add_argument("--project", required=True)
+    p = sub.add_parser("init", help="задать настройки и записать .env")
+    p.add_argument("--env-file", default=".env")
+    p.add_argument("--non-interactive", action="store_true")
+    p.add_argument("--register-webhooks", action="store_true")
+    p.add_argument("--public-url", default="")
+    p.add_argument("--database-url", default="")
+    p.add_argument("--jira-url", default="")
+    p.add_argument("--jira-token", default="")
+    p.add_argument("--bitbucket-url", default="")
+    p.add_argument("--bitbucket-token", default="")
+    p.add_argument("--spec-repo", default="")
+    p.add_argument("--code-repo", default="")
+    p.add_argument("--target-branch", default="master")
+    p.add_argument("--idea-type", default="")
+    p.add_argument("--analysis-project", default="")
+    p.add_argument("--analysis-type", default="Task")
+    p.add_argument("--dev-project", default="")
+    p.add_argument("--dev-type", default="Task")
+    p.add_argument("--done-transition", default="Done")
+    p.add_argument("--webhook-secret", default="")
+    p.add_argument("--no-ci", action="store_true")
+    p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("register-webhook", help="повесить webhook на репозиторий (или на все из .env)")
+    p.add_argument("--repo", help="ПРОЕКТ/репозиторий, например SPEC/business-specs")
+    p.add_argument("--project", help="весь проект Bitbucket — только если так решили специально")
+    p.add_argument("--all", action="store_true")
     p.set_defaults(func=cmd_register_webhook)
+
+    p = sub.add_parser("up", help="одной командой: база, моки Jira/Bitbucket и сервис")
+    p.add_argument("--host")
+    p.add_argument("--port", type=int)
+    p.add_argument("--reload", action="store_true")
+    p.add_argument("--no-mocks", action="store_true",
+                   help="не поднимать моки (когда .env указывает на живые Jira/Bitbucket)")
+    p.add_argument("--mock-host", default="127.0.0.1")
+    p.add_argument("--mock-port", type=int, default=48090)
+    p.add_argument("--docker", action="store_true", help="поднять всё через docker compose --profile app")
+    p.add_argument("--build", action="store_true")
+    p.set_defaults(func=cmd_up)
 
     p = sub.add_parser("validate", help="проверить спецификацию по шаблону")
     p.add_argument("file")

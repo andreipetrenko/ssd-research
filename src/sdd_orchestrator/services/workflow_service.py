@@ -98,7 +98,8 @@ class WorkflowService:
         if ev.target_branch not in self.settings.target_branch_list:
             return "ignored", f"Целевая ветка {ev.target_branch} не отслеживается"
         if ev.metadata_errors:
-            return "rejected", "; ".join(ev.metadata_errors)
+            # Ordinary PRs in a shared repo must not get a bot comment.
+            return "ignored", "; ".join(ev.metadata_errors)
         stage = ArtifactType(ev.stage)
         if stage is ArtifactType.IMPLEMENTATION and repo not in code_repos:
             return "rejected", f"PR с кодом пришёл из репозитория спецификаций {repo}"
@@ -416,12 +417,17 @@ class WorkflowService:
 
     # --- helpers ----------------------------------------------------------------------------------
 
+    _DONE_ALIASES = {"done", "готово", "resolve", "resolve issue", "closed", "close", "закрыть", "resolved"}
+
     def _transition_done(self, key: str) -> str | None:
         name = self.settings.jira_done_transition
         if not name:
             return None
+        wanted = {name.lower()}
+        if name.lower() in self._DONE_ALIASES:
+            wanted |= self._DONE_ALIASES
         for transition in self.jira.get_transitions(key):
-            if transition.get("name", "").lower() == name.lower():
+            if transition.get("name", "").lower() in wanted:
                 self.jira.transition(key, transition["id"])
                 return transition["name"]
         log.warning("transition %r is not available for %s", name, key)
