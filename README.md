@@ -58,8 +58,32 @@ uv run python scripts/demo.py --fault --tasks 2
    Права: Read на репозиторий спецификаций и на репозиторий кода (читать PR, писать комментарии).
 3. Адрес, по которому Bitbucket достучится до этого сервиса, например `https://sdd.company.ru`.
    Путь `/webhooks/bitbucket` нельзя закрывать формой логина.
+4. PostgreSQL — см. ниже. Новую ставить не обязательно, если база уже есть.
 
 Поле Labels в Jira настраивать не нужно.
+
+### PostgreSQL
+
+Сервису нужна PostgreSQL. Это не база Jira и не Bitbucket: отдельная база (или хотя бы место, куда можно писать таблицы `sdd_*`).
+
+Таблицы **создаются при запуске** (`sdd serve` / `sdd up`). SQL руками накатывать не нужно: при старте выполняется `migrations/001_init.sql`. Если таблицы уже есть, повторный запуск их не пересоздаёт.
+
+Если Postgres уже есть, в `sdd init` на вопрос «Строка PostgreSQL» вставьте свою строку:
+
+```
+postgresql+psycopg://логин:пароль@хост:5432/имя_базы
+```
+
+Пользователя именно `sdd` создавать не обязательно — подойдёт любая учётка, которой вам уже дали доступ.
+
+Этой учётке нужно право **создавать таблицы** в выбранной базе. Если такого права нет, администратор БД один раз выполняет `migrations/001_init.sql` и выдаёт доступ к получившимся объектам:
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ваш_логин;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ваш_логин;
+```
+
+После этого `sdd doctor` должен показать `[OK] PostgreSQL: подключение есть`.
 
 ### Запуск
 
@@ -146,7 +170,7 @@ sdd open-pr --change CHG-1042 --stage implementation --jira DEV-231 --project AP
 
 | Сообщение | Что сделать |
 |---|---|
-| PostgreSQL | Снова `uv run sdd up` или поправить `SDD_DATABASE_URL` |
+| PostgreSQL | Поправить `SDD_DATABASE_URL` (логин, пароль, хост, имя базы). Если учётка не может создавать таблицы — попросить администратора накатить `migrations/001_init.sql` |
 | Jira 401 / проект не виден | Токен и права учётки `svc-sdd` |
 | Типа «Story» нет | Поставить `SDD_JIRA_DEV_ISSUE_TYPE` в имя из списка, который напечатал doctor |
 | Jira просит ещё поля | Вставить JSON из подсказки doctor в `SDD_JIRA_DEV_EXTRA_FIELDS` |
